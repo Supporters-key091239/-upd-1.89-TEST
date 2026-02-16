@@ -1,4 +1,4 @@
--- KS-Rivals Script Hub (Optimized Silent Aim - No Freeze Edition)
+-- KS-Rivals Script Hub (Fixed & Optimized v2.3 - Client Freeze Fix)
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -11,16 +11,16 @@ local Mouse = LocalPlayer:GetMouse()
 local Camera = workspace.CurrentCamera
 
 -- ============================================
--- PERFORMANCE OPTIMIZATION SETTINGS
+-- SAFETY LIMITS (프리징 방지)
 -- ============================================
-local SILENT_AIM_UPDATE_RATE = 0.05 -- 초당 20번만 업데이트 (성능 최적화)
-local MAX_RAYCAST_DISTANCE = 500 -- 최대 레이캐스트 거리 제한
-local VISIBILITY_CHECK_INTERVAL = 0.1 -- 가시성 체크 간격
+local MAX_ITERATIONS_PER_FRAME = 10
+local MAIN_LOOP_INTERVAL = 0.05
+local RENDERSTEP_LIMIT = 5
+local currentRenderStepCount = 0
 
 -- ============================================
 -- TEAM CHECK SYSTEM
 -- ============================================
-
 local function getTeamID(player)
     local teamID = player:GetAttribute("TeamID")
     if teamID then return teamID end
@@ -57,9 +57,8 @@ local function isEnemy(player)
 end
 
 -- ============================================
--- CONFIG SYSTEM (Global Variables)
+-- CONFIG SYSTEM
 -- ============================================
-
 local ESP_ENABLED = false
 local SILENT_AIM_ENABLED = false
 local HP_BAR_ENABLED = false
@@ -82,15 +81,13 @@ local aimLockConnection
 local lastClickTime = 0
 local CLICK_INTERVAL = 0.01
 
--- Loading System Variables
+-- Loading System
 local LOADING_COMPLETE = false
 local HUB_ANIMATION_PLAYING = false
 local LOADING_ERRORS = {}
-
--- Toggle Check Inner References
 local ToggleCheckInners = {}
 
--- Third Person Variables
+-- Third Person
 local thirdPersonConnection = nil
 local thirdPersonWheelConnection = nil
 local distance = 12
@@ -100,7 +97,7 @@ local MIN_DISTANCE = 3
 local MAX_DISTANCE = 30
 local ZOOM_SPEED = 1.5
 
--- Full Auto 전용 변수
+-- Full Auto (최적화됨)
 local faTargetPlayer = nil
 local faIsAbove = false
 local faLastHealth = 100
@@ -112,30 +109,34 @@ local faCameraConnection = nil
 local faIsFirstTeleport = true
 local faLoopActive = false
 local faLastAutoClickTime = 0
-local FA_CLICK_INTERVAL = 0.02
+local FA_CLICK_INTERVAL = 0.05 -- 증가 (과부하 방지)
 local faAutoClickPaused = false
 local faGravityConnection = nil
 local faLastRetreatTime = 0
-local FA_RETREAT_INTERVAL = 2.5
+local FA_RETREAT_INTERVAL = 3 -- 증가
 local faIsRetreating = false
 local faRetreatLock = false
+local FA_TELEPORT_COOLDOWN = 0.1 -- 새로 추가
+local faLastTeleportTime = 0
 
--- No Cool Time 전용 변수
+-- No Cool Time
 local noCoolTimeConnection = nil
 local noCoolTimeApplied = false
 local weaponDataCache = nil
 local lastCooldownRemoval = 0
-local COOLDOWN_REMOVAL_INTERVAL = 10
+local COOLDOWN_REMOVAL_INTERVAL = 15 -- 증가
 
--- Rage Bot 전용 변수
+-- Rage Bot (최적화됨)
 local rbEnabled = false
 local rbTarget = nil
 local rbConnection = nil
 local rbChar = nil
 local rbHrp = nil
 local rbHum = nil
+local RB_UPDATE_INTERVAL = 0.05 -- 새로 추가
+local rbLastUpdateTime = 0
 
--- No Recoil 전용 변수
+-- No Recoil
 local nrGunModule = nil
 local nrItemLibrary = nil
 local nrOriginalRecoil = nil
@@ -143,15 +144,14 @@ local nrOriginalStartShooting = nil
 local nrOriginal_LocalTracers = nil
 local nrCrosshairProtected = false
 
--- ★★★ Silent Aim 최적화 변수 ★★★
+-- Silent Aim
 local silentAimActive = false
 local oldNamecall = nil
 local metaTableHooked = false
-local lastSilentAimUpdate = 0
-local cachedClosestPlayer = nil
-local lastVisibilityCheck = 0
-local visibilityCache = {}
 
+-- ============================================
+-- CONFIG SAVE/LOAD
+-- ============================================
 local function saveConfig()
     local config = {
         ESP_ENABLED = ESP_ENABLED,
@@ -224,7 +224,6 @@ end
 -- ============================================
 -- AUTO-RELOAD SYSTEM
 -- ============================================
-
 local SCRIPT_URL = "https://raw.githubusercontent.com/Supporters-key091239/-upd-1.89-TEST/refs/heads/main/Loader.lua"
 local BOOTSTRAP_CODE = [[
 repeat task.wait() until game:IsLoaded()
@@ -250,7 +249,6 @@ end)
 -- ============================================
 -- NOTIFICATION SYSTEM
 -- ============================================
-
 pcall(function()
     for _, gui in ipairs(LocalPlayer.PlayerGui:GetChildren()) do
         if gui.Name == "NotificationSystem" then gui:Destroy() end
@@ -312,70 +310,34 @@ local function createNotification(text)
 end
 
 -- ============================================
--- ★★★ OPTIMIZED SILENT AIM SYSTEM ★★★
+-- SILENT AIM SYSTEM (안정화됨)
 -- ============================================
-
--- 최적화된 가시성 체크 (캐싱 사용)
 local function isVisible(targetHead)
     if not targetHead then return false end
-    
-    local currentTime = tick()
-    local cacheKey = targetHead.Parent.Name
-    
-    -- 캐시된 결과가 있고 최근(0.1초 이내)이면 재사용
-    if visibilityCache[cacheKey] and (currentTime - visibilityCache[cacheKey].time) < VISIBILITY_CHECK_INTERVAL then
-        return visibilityCache[cacheKey].visible
-    end
-    
     local character = LocalPlayer.Character
-    if not character then 
-        visibilityCache[cacheKey] = {visible = false, time = currentTime}
-        return false 
-    end
+    if not character then return false end
     
-    local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {character}
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local success, result = pcall(function()
+        local rayParams = RaycastParams.new()
+        rayParams.FilterDescendantsInstances = {character}
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        
+        local origin = Camera.CFrame.Position
+        local direction = (targetHead.Position - origin)
+        local ray = workspace:Raycast(origin, direction, rayParams)
+        
+        if not ray then return true end
+        return ray.Instance:IsDescendantOf(targetHead.Parent)
+    end)
     
-    local origin = Camera.CFrame.Position
-    local direction = (targetHead.Position - origin)
-    
-    -- 최대 거리 제한
-    if direction.Magnitude > MAX_RAYCAST_DISTANCE then
-        visibilityCache[cacheKey] = {visible = false, time = currentTime}
-        return false
-    end
-    
-    local ray = workspace:Raycast(origin, direction, rayParams)
-    
-    local isVis = false
-    if not ray then 
-        isVis = true
-    else
-        isVis = ray.Instance:IsDescendantOf(targetHead.Parent)
-    end
-    
-    -- 결과 캐싱
-    visibilityCache[cacheKey] = {visible = isVis, time = currentTime}
-    return isVis
+    return success and result or false
 end
 
--- 최적화된 가장 가까운 플레이어 찾기 (업데이트 레이트 제한)
 local function getClosestPlayerForSilentAim()
     if not SILENT_AIM_ENABLED then return nil end
     
-    local currentTime = tick()
-    
-    -- 너무 자주 업데이트하지 않음 (성능 최적화)
-    if currentTime - lastSilentAimUpdate < SILENT_AIM_UPDATE_RATE then
-        return cachedClosestPlayer
-    end
-    
-    lastSilentAimUpdate = currentTime
-    
     local character = LocalPlayer.Character
     if not character or not character:FindFirstChild("HumanoidRootPart") then
-        cachedClosestPlayer = nil
         return nil
     end
     
@@ -389,36 +351,31 @@ local function getClosestPlayerForSilentAim()
             local humanoid = player.Character:FindFirstChild("Humanoid")
             
             if head and humanoid and humanoid.Health > 0 then
-                -- 먼저 화면 내에 있는지만 빠르게 체크
-                local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+                local success, screenPos, onScreen = pcall(function()
+                    return Camera:WorldToScreenPoint(head.Position)
+                end)
                 
-                if onScreen then
+                if success and onScreen and isVisible(head) then
                     local screenDistance = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
                     
-                    -- 가장 가까운 후보만 가시성 체크 (성능 최적화)
                     if screenDistance < shortestScreenDistance then
-                        if isVisible(head) then
-                            shortestScreenDistance = screenDistance
-                            closestPlayer = player
-                        end
+                        shortestScreenDistance = screenDistance
+                        closestPlayer = player
                     end
                 end
             end
         end
     end
     
-    cachedClosestPlayer = closestPlayer
     return closestPlayer
 end
 
--- 최적화된 가짜 레이캐스트 결과 생성
 local function createFakeRaycastResult(targetHead, rayOrigin)
     if not targetHead then return nil end
     
     local direction = (targetHead.Position - rayOrigin).Unit
     local distance = (targetHead.Position - rayOrigin).Magnitude
     
-    -- 테이블 재사용으로 메모리 할당 최소화
     return {
         Instance = targetHead,
         Position = targetHead.Position,
@@ -428,73 +385,48 @@ local function createFakeRaycastResult(targetHead, rayOrigin)
     }
 end
 
--- 최적화된 레이캐스트 후킹 조건 체크
 local function shouldHookRaycast(origin, direction, raycastParams)
     if not SILENT_AIM_ENABLED then return false end
     if not raycastParams then return false end
     
-    -- 빠른 필터링
-    if raycastParams.FilterType ~= Enum.RaycastFilterType.Include then
-        return false
-    end
+    -- 안전 검사 추가
+    local success, isValid = pcall(function()
+        if raycastParams.FilterType ~= Enum.RaycastFilterType.Include then
+            return false
+        end
+        
+        local rayDistance = direction.Magnitude
+        if rayDistance < 10 then return false end
+        
+        local camPos = Camera.CFrame.Position
+        local distanceFromCamera = (origin - camPos).Magnitude
+        
+        if distanceFromCamera > 5 then return false end
+        
+        return true
+    end)
     
-    local rayDistance = direction.Magnitude
-    if rayDistance < 10 or rayDistance > MAX_RAYCAST_DISTANCE then 
-        return false 
-    end
-    
-    local camPos = Camera.CFrame.Position
-    local distanceFromCamera = (origin - camPos).Magnitude
-    
-    if distanceFromCamera > 5 then 
-        return false 
-    end
-    
-    return true
+    return success and isValid
 end
 
--- ★★★ 안전한 메타테이블 후킹 (오류 방지 강화) ★★★
 local function setupSilentAimHook()
     if metaTableHooked then return end
     
-    local success, error = pcall(function()
+    local success = pcall(function()
         local mt = getrawmetatable(game)
-        
-        if not mt then
-            warn("[Silent Aim] Failed to get metatable")
-            return
-        end
-        
-        -- 원본 함수 저장
         oldNamecall = mt.__namecall
-        if not oldNamecall then
-            warn("[Silent Aim] __namecall not found")
-            return
-        end
         
-        -- 메타테이블을 쓰기 가능하게 만들기
-        local makeWritableSuccess = pcall(function()
-            setreadonly(mt, false)
-        end)
+        setreadonly(mt, false)
         
-        if not makeWritableSuccess then
-            pcall(function()
-                make_writeable(mt)
-            end)
-        end
-        
-        -- 새로운 __namecall 함수
-        local newNamecall = function(self, ...)
+        mt.__namecall = function(self, ...)
             local method = getnamecallmethod()
+            local args = {...}
             
-            -- Raycast만 후킹 (다른 메서드는 건드리지 않음)
             if method == "Raycast" and self == workspace then
-                local args = {...}
                 local origin = args[1]
                 local direction = args[2]
                 local raycastParams = args[3]
                 
-                -- 후킹 조건 체크
                 if shouldHookRaycast(origin, direction, raycastParams) then
                     local closestPlayer = getClosestPlayerForSilentAim()
                     if closestPlayer and closestPlayer.Character then
@@ -507,56 +439,27 @@ local function setupSilentAimHook()
                 end
             end
             
-            -- 원본 함수 호출
             return oldNamecall(self, ...)
         end
         
-        -- newcclosure 사용 (있으면)
-        if newcclosure then
-            mt.__namecall = newcclosure(newNamecall)
-        else
-            mt.__namecall = newNamecall
-        end
-        
-        -- 메타테이블 다시 읽기 전용으로
-        pcall(function()
-            setreadonly(mt, true)
-        end)
-        
-        pcall(function()
-            make_readonly(mt)
-        end)
-        
+        setreadonly(mt, true)
         metaTableHooked = true
-        print("[Silent Aim] Hook installed successfully")
     end)
     
     if not success then
-        warn("[Silent Aim] Hook installation failed:", error)
-        SILENT_AIM_ENABLED = false -- 실패 시 비활성화
+        table.insert(LOADING_ERRORS, "Silent Aim Hook Failed")
     end
 end
 
--- 초기 후킹 설정
-setupSilentAimHook()
-
--- ★★★ 정기적인 캐시 클리어 (메모리 누수 방지) ★★★
+-- 게임 로드 후 후킹 시도
 task.spawn(function()
-    while task.wait(5) do
-        -- 5초마다 오래된 캐시 클리어
-        local currentTime = tick()
-        for key, data in pairs(visibilityCache) do
-            if currentTime - data.time > 1 then
-                visibilityCache[key] = nil
-            end
-        end
-    end
+    task.wait(2)
+    setupSilentAimHook()
 end)
 
 -- ============================================
 -- UI SETUP
 -- ============================================
-
 pcall(function()
     for _, gui in ipairs(game:GetService("CoreGui"):GetChildren()) do
         if gui.Name == "KSRivals_Hub" then gui:Destroy() end
@@ -590,9 +493,8 @@ MainStroke.Thickness = 1
 MainStroke.Parent = MainFrame
 
 -- ============================================
--- KEYBIND INFO UI (Enhanced)
+-- KEYBIND INFO UI
 -- ============================================
-
 local KeybindInfoFrame = Instance.new("Frame")
 KeybindInfoFrame.Name = "KeybindInfoFrame"
 KeybindInfoFrame.Parent = KSRivals
@@ -640,10 +542,6 @@ KeybindInfo.TextXAlignment = Enum.TextXAlignment.Left
 KeybindInfo.TextYAlignment = Enum.TextYAlignment.Top
 KeybindInfo.TextWrapped = true
 
--- ============================================
--- KEYBIND INFO UPDATE FUNCTION
--- ============================================
-
 local function formatKeyName(enumItem)
     local name = enumItem.Name
     if name == "MouseButton1" then return "MB1" end
@@ -674,10 +572,6 @@ local function UpdateKeybindInfo()
     KeybindInfoFrame.Size = UDim2.new(0, 170, 0, newHeight)
     KeybindInfoFrame.Position = UDim2.new(1, -180, 0.5, -newHeight/2)
 end
-
--- ============================================
--- KEYBIND INFO ANIMATION FUNCTIONS
--- ============================================
 
 local KEYBIND_ANIMATION_PLAYING = false
 
@@ -764,7 +658,6 @@ end
 -- ============================================
 -- LOADING UI SYSTEM
 -- ============================================
-
 local LoadingOverlay = Instance.new("Frame")
 LoadingOverlay.Name = "LoadingOverlay"
 LoadingOverlay.Parent = MainFrame
@@ -797,7 +690,7 @@ LoadingSubtitle.Position = UDim2.new(0.5, 0, 0.38, 0)
 LoadingSubtitle.Size = UDim2.new(0.8, 0, 0, 20)
 LoadingSubtitle.AnchorPoint = Vector2.new(0.5, 0.5)
 LoadingSubtitle.Font = Enum.Font.GothamBold
-LoadingSubtitle.Text = "OPTIMIZED EDITION"
+LoadingSubtitle.Text = "FIXED v2.3 - TEAM KS"
 LoadingSubtitle.TextColor3 = Color3.fromRGB(100, 100, 100)
 LoadingSubtitle.TextSize = 11
 LoadingSubtitle.ZIndex = 101
@@ -868,7 +761,6 @@ LoadingPercent.TextTransparency = 1
 -- ============================================
 -- CONTENT CONTAINER
 -- ============================================
-
 local ContentContainer = Instance.new("Frame")
 ContentContainer.Name = "ContentContainer"
 ContentContainer.Parent = MainFrame
@@ -884,7 +776,7 @@ TopBar.BackgroundTransparency = 1
 TopBar.Parent = ContentContainer
 
 local Title = Instance.new("TextLabel")
-Title.Text = "KS-Rivals HUB2 - Optimized"
+Title.Text = "KS-Rivals HUB2 - Fixed v2.3"
 Title.Font = Enum.Font.Code
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 13
@@ -944,10 +836,6 @@ VisualPage.BackgroundTransparency = 1
 VisualPage.Visible = false
 VisualPage.Parent = Content
 
--- ============================================
--- HELPER FUNCTION: Check if element should be excluded
--- ============================================
-
 local function IsToggleCheckInner(element)
     for _, checkInner in ipairs(ToggleCheckInners) do
         if element == checkInner then
@@ -960,7 +848,6 @@ end
 -- ============================================
 -- HUB ANIMATION FUNCTIONS
 -- ============================================
-
 local function AnimateHubOpen()
     if HUB_ANIMATION_PLAYING then return end
     HUB_ANIMATION_PLAYING = true
@@ -991,9 +878,7 @@ local function AnimateHubOpen()
         ContentContainer.Visible = true
         
         for _, child in ipairs(ContentContainer:GetDescendants()) do
-            if IsToggleCheckInner(child) then
-                continue
-            end
+            if IsToggleCheckInner(child) then continue end
             
             if child:IsA("TextLabel") or child:IsA("TextButton") then
                 child.TextTransparency = 1
@@ -1021,9 +906,7 @@ local function AnimateHubClose(callback)
     HUB_ANIMATION_PLAYING = true
     
     for _, child in ipairs(ContentContainer:GetDescendants()) do
-        if IsToggleCheckInner(child) then
-            continue
-        end
+        if IsToggleCheckInner(child) then continue end
         
         if child:IsA("TextLabel") or child:IsA("TextButton") then
             TweenService:Create(child, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
@@ -1129,9 +1012,8 @@ local function EndLoadingAnimation(callback)
 end
 
 -- ============================================
--- NO RECOIL LOGIC (나머지 기능들은 원본 유지)
+-- NO RECOIL LOGIC
 -- ============================================
-
 local function initNoRecoilModules()
     pcall(function()
         local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts", 5)
@@ -1194,57 +1076,6 @@ local function enableNoRecoil()
                 end
             end
         end
-        
-        if not nrCrosshairProtected then
-            task.spawn(function()
-                local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
-                if not playerGui then return end
-                
-                local possiblePaths = {
-                    "Crosshair",
-                    "HUD/Crosshair",
-                    "GameUI/Crosshair",
-                    "Interface/Crosshair",
-                    "Gameplay/Crosshair"
-                }
-                
-                for _, path in ipairs(possiblePaths) do
-                    local parts = string.split(path, "/")
-                    local current = playerGui
-                    
-                    for _, part in ipairs(parts) do
-                        current = current:FindFirstChild(part)
-                        if not current then break end
-                    end
-                    
-                    if current then
-                        RunService.RenderStepped:Connect(function()
-                            if not NO_RECOIL_ENABLED then return end
-                            if current then
-                                current.Visible = true
-                                for _, descendant in ipairs(current:GetDescendants()) do
-                                    if descendant:IsA("GuiObject") then
-                                        if descendant:IsA("ImageLabel") or descendant:IsA("ImageButton") then
-                                            if descendant.ImageTransparency > 0.9 then
-                                                descendant.ImageTransparency = 0
-                                            end
-                                        end
-                                        if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-                                            if descendant.TextTransparency > 0.9 then
-                                                descendant.TextTransparency = 0
-                                            end
-                                        end
-                                        descendant.Visible = true
-                                    end
-                                end
-                            end
-                        end)
-                        nrCrosshairProtected = true
-                        break
-                    end
-                end
-            end)
-        end
     end)
     
     createNotification("No Recoil Enabled")
@@ -1265,13 +1096,9 @@ local function disableNoRecoil()
     createNotification("No Recoil Disabled")
 end
 
--- [나머지 Third Person, No Cool Time, Rage Bot, Full Auto 코드는 원본과 동일하므로 생략]
--- 용량 제한으로 인해 생략했지만, 원본 코드의 해당 섹션을 그대로 사용하면 됩니다.
-
 -- ============================================
 -- THIRD PERSON CAMERA LOGIC
 -- ============================================
-
 local function updateThirdPersonCamera()
     local character = LocalPlayer.Character
     if character and character:FindFirstChild("HumanoidRootPart") then
@@ -1326,7 +1153,9 @@ local function disableThirdPerson()
     createNotification("Third Person Disabled")
 end
 
+-- ============================================
 -- NO COOL TIME LOGIC
+-- ============================================
 local function removeCooldowns()
     local currentTime = tick()
     if currentTime - lastCooldownRemoval < COOLDOWN_REMOVAL_INTERVAL then return noCoolTimeApplied end
@@ -1377,7 +1206,9 @@ local function hookCharacterForNoCoolTime()
     end)
 end
 
--- RAGE BOT LOGIC
+-- ============================================
+-- RAGE BOT LOGIC (최적화 - 프리징 방지)
+-- ============================================
 local function rbUpdateCharacterRefs()
     rbChar = LocalPlayer.Character
     if rbChar then
@@ -1407,23 +1238,42 @@ local function rbFindNearestPlayer()
 end
 
 local function rbMainLoop()
-    if not rbEnabled then return end
-    rbTarget = rbFindNearestPlayer()
-    if rbTarget and rbTarget.Character and rbHrp then
-        local tHrp = rbTarget.Character:FindFirstChild("HumanoidRootPart")
-        local tH = rbTarget.Character:FindFirstChild("Humanoid")
-        if tHrp and tH and tH.Health > 0 then
-            local offsetX = math.random(-8, 8)
-            local offsetY = math.random(6, 12)
-            local offsetZ = math.random(-8, 8)
-            local targetPos = tHrp.Position + Vector3.new(offsetX, offsetY, offsetZ)
-            rbHrp.CFrame = CFrame.new(targetPos)
-            local time = tick() * 25
-            local rotX = math.rad(math.sin(time * 3.7) * 360)
-            local rotY = math.rad(math.cos(time * 4.3) * 360)
-            local rotZ = math.rad(math.sin(time * 5.1) * 360)
-            rbHrp.CFrame = rbHrp.CFrame * CFrame.Angles(rotX, rotY, rotZ)
-            rbHrp.Velocity = Vector3.new(math.random(-50, 50), math.random(-50, 50), math.random(-50, 50))
+    while rbEnabled do
+        task.wait(RB_UPDATE_INTERVAL) -- 중요: 매 프레임마다 실행하지 않음
+        
+        if not rbEnabled then break end
+        
+        local currentTime = tick()
+        if currentTime - rbLastUpdateTime < RB_UPDATE_INTERVAL then
+            continue
+        end
+        rbLastUpdateTime = currentTime
+        
+        rbTarget = rbFindNearestPlayer()
+        if rbTarget and rbTarget.Character and rbHrp then
+            local tHrp = rbTarget.Character:FindFirstChild("HumanoidRootPart")
+            local tH = rbTarget.Character:FindFirstChild("Humanoid")
+            if tHrp and tH and tH.Health > 0 then
+                pcall(function()
+                    local offsetX = math.random(-8, 8)
+                    local offsetY = math.random(6, 12)
+                    local offsetZ = math.random(-8, 8)
+                    local targetPos = tHrp.Position + Vector3.new(offsetX, offsetY, offsetZ)
+                    rbHrp.CFrame = CFrame.new(targetPos)
+                    
+                    local time = tick() * 15 -- 회전 속도 감소
+                    local rotX = math.rad(math.sin(time * 2) * 360)
+                    local rotY = math.rad(math.cos(time * 2) * 360)
+                    local rotZ = math.rad(math.sin(time * 2) * 360)
+                    rbHrp.CFrame = rbHrp.CFrame * CFrame.Angles(rotX, rotY, rotZ)
+                    
+                    rbHrp.Velocity = Vector3.new(
+                        math.random(-30, 30), 
+                        math.random(-30, 30), 
+                        math.random(-30, 30)
+                    )
+                end)
+            end
         end
     end
 end
@@ -1436,7 +1286,9 @@ LocalPlayer.CharacterAdded:Connect(function(newChar)
     rbUpdateCharacterRefs()
 end)
 
--- FULL AUTO LOGIC
+-- ============================================
+-- FULL AUTO LOGIC (최적화 - 프리징 방지)
+-- ============================================
 local function faFindClosestPlayer()
     if not FULL_AUTO_ENABLED then return nil end
     local character = LocalPlayer.Character
@@ -1461,14 +1313,16 @@ end
 
 local function faPressR()
     if not FULL_AUTO_ENABLED then return end
-    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
-    task.wait(0.05)
-    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
+        task.wait(0.05)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+    end)
 end
 
 local function faDisableGravity()
     if faGravityConnection then faGravityConnection:Disconnect() end
-    faGravityConnection = RunService.RenderStepped:Connect(function()
+    faGravityConnection = RunService.Heartbeat:Connect(function() -- RenderStepped 대신 Heartbeat 사용
         if not FULL_AUTO_ENABLED then 
             if faGravityConnection then faGravityConnection:Disconnect() faGravityConnection = nil end
             return 
@@ -1504,7 +1358,7 @@ end
 
 local function faStartSpinning()
     if faSpinConnection then faSpinConnection:Disconnect() end
-    faSpinConnection = RunService.RenderStepped:Connect(function()
+    faSpinConnection = RunService.Heartbeat:Connect(function() -- RenderStepped 대신 Heartbeat 사용
         if not FULL_AUTO_ENABLED then 
             if faSpinConnection then faSpinConnection:Disconnect() faSpinConnection = nil end
             return 
@@ -1512,15 +1366,21 @@ local function faStartSpinning()
         if faIsRetreating then return end
         local character = LocalPlayer.Character
         if character and character:FindFirstChild("HumanoidRootPart") then
-            local root = character.HumanoidRootPart
-            root.CFrame = root.CFrame * CFrame.Angles(math.rad(math.random(-30, 30)), math.rad(math.random(0, 360)), math.rad(math.random(-30, 30)))
+            pcall(function()
+                local root = character.HumanoidRootPart
+                root.CFrame = root.CFrame * CFrame.Angles(
+                    math.rad(math.random(-20, 20)), 
+                    math.rad(math.random(0, 180)), 
+                    math.rad(math.random(-20, 20))
+                )
+            end)
         end
     end)
 end
 
 local function faStartCameraLock()
     if faCameraConnection then faCameraConnection:Disconnect() end
-    faCameraConnection = RunService.RenderStepped:Connect(function()
+    faCameraConnection = RunService.Heartbeat:Connect(function() -- RenderStepped 대신 Heartbeat 사용
         if not FULL_AUTO_ENABLED then 
             Camera.CameraType = Enum.CameraType.Custom
             if faCameraConnection then faCameraConnection:Disconnect() faCameraConnection = nil end
@@ -1530,12 +1390,14 @@ local function faStartCameraLock()
         local character = LocalPlayer.Character
         local myRoot = character and character:FindFirstChild("HumanoidRootPart")
         if faTargetPlayer and faTargetPlayer.Character and myRoot then
-            local targetHead = faTargetPlayer.Character:FindFirstChild("Head")
-            if targetHead then
-                Camera.CameraType = Enum.CameraType.Scriptable
-                local cameraPosition = myRoot.Position + Vector3.new(0, 5, 0)
-                Camera.CFrame = CFrame.new(cameraPosition, targetHead.Position)
-            end
+            pcall(function()
+                local targetHead = faTargetPlayer.Character:FindFirstChild("Head")
+                if targetHead then
+                    Camera.CameraType = Enum.CameraType.Scriptable
+                    local cameraPosition = myRoot.Position + Vector3.new(0, 5, 0)
+                    Camera.CFrame = CFrame.new(cameraPosition, targetHead.Position)
+                end
+            end)
         end
     end)
 end
@@ -1554,7 +1416,7 @@ end
 
 local function faStartAutoClick()
     if faAutoClickConnection then faAutoClickConnection:Disconnect() end
-    faAutoClickConnection = RunService.RenderStepped:Connect(function()
+    faAutoClickConnection = RunService.Heartbeat:Connect(function() -- RenderStepped 대신 Heartbeat 사용
         if not FULL_AUTO_ENABLED then 
             if faAutoClickConnection then faAutoClickConnection:Disconnect() faAutoClickConnection = nil end
             return 
@@ -1576,77 +1438,98 @@ local function faPerformRetreat(targetRoot)
     faRetreatLock = true
     faIsRetreating = true
     faAutoClickPaused = true
-    local character = LocalPlayer.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not root or not targetRoot then
-        faIsRetreating = false
-        faAutoClickPaused = false
-        faRetreatLock = false
-        return
-    end
-    Camera.CameraType = Enum.CameraType.Custom
-    root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 10000, 0))
-    task.wait(0.2)
-    faPressR()
-    task.wait(2)
-    faAutoClickPaused = false
-    faIsRetreating = false
-    faLastRetreatTime = tick()
-    faIsAbove = false
-    faRetreatLock = false
-    local newHumanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-    if newHumanoid then faLastHealth = newHumanoid.Health end
-    local newTargetChar = faTargetPlayer and faTargetPlayer.Character
-    local newTargetHum = newTargetChar and newTargetChar:FindFirstChild("Humanoid")
-    if newTargetHum then faTargetLastHealth = newTargetHum.Health end
+    
+    task.spawn(function()
+        pcall(function()
+            local character = LocalPlayer.Character
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            if not root or not targetRoot then
+                faIsRetreating = false
+                faAutoClickPaused = false
+                faRetreatLock = false
+                return
+            end
+            Camera.CameraType = Enum.CameraType.Custom
+            root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 10000, 0))
+            task.wait(0.3)
+            faPressR()
+            task.wait(2.5)
+            faAutoClickPaused = false
+            faIsRetreating = false
+            faLastRetreatTime = tick()
+            faIsAbove = false
+            faRetreatLock = false
+            local newHumanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+            if newHumanoid then faLastHealth = newHumanoid.Health end
+            local newTargetChar = faTargetPlayer and faTargetPlayer.Character
+            local newTargetHum = newTargetChar and newTargetChar:FindFirstChild("Humanoid")
+            if newTargetHum then faTargetLastHealth = newTargetHum.Health end
+        end)
+    end)
 end
 
 local function faMainLoop()
     faLoopActive = true
     while FULL_AUTO_ENABLED do
-        task.wait(0.1)
+        task.wait(MAIN_LOOP_INTERVAL) -- 중요: 0.05초마다 실행 (프리징 방지)
+        
         if not FULL_AUTO_ENABLED then break end
-        if not faTargetPlayer or not faTargetPlayer.Character then
-            faTargetPlayer = faFindClosestPlayer()
-            if not faTargetPlayer then task.wait(0.5) continue end
-            local targetHum = faTargetPlayer.Character:FindFirstChild("Humanoid")
-            if targetHum then 
-                faTargetLastHealth = targetHum.Health
-                faTargetMaxHealth = targetHum.MaxHealth
-            end
-        end
-        local character = LocalPlayer.Character
-        local humanoid = character and character:FindFirstChild("Humanoid")
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        if not character or not humanoid or not root then task.wait(0.5) continue end
-        local targetChar = faTargetPlayer.Character
-        local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-        local targetHumanoid = targetChar and targetChar:FindFirstChild("Humanoid")
-        if not targetRoot or not targetHumanoid then 
-            faTargetPlayer = nil 
-            task.wait(0.5)
-            continue 
-        end
-        local currentHealth = humanoid.Health
-        local currentTime = tick()
-        if not faRetreatLock then
-            if currentHealth < faLastHealth and faLastHealth > 0 then
-                faPerformRetreat(targetRoot)
-            elseif not faIsRetreating and (currentTime - faLastRetreatTime >= FA_RETREAT_INTERVAL) then
-                faPerformRetreat(targetRoot)
-            elseif not faIsAbove and not faIsRetreating then
-                root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 10000, 0))
-                task.wait(math.random(10, 20) / 10)
-                faIsAbove = true
-            elseif not faIsRetreating then
-                root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 15, 0))
-                if faIsFirstTeleport then
-                    task.wait(2)
-                    faIsFirstTeleport = false
+        
+        pcall(function()
+            if not faTargetPlayer or not faTargetPlayer.Character then
+                faTargetPlayer = faFindClosestPlayer()
+                if not faTargetPlayer then return end
+                local targetHum = faTargetPlayer.Character:FindFirstChild("Humanoid")
+                if targetHum then 
+                    faTargetLastHealth = targetHum.Health
+                    faTargetMaxHealth = targetHum.MaxHealth
                 end
-                faLastHealth = currentHealth
             end
-        end
+            
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChild("Humanoid")
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            if not character or not humanoid or not root then return end
+            
+            local targetChar = faTargetPlayer.Character
+            local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+            local targetHumanoid = targetChar and targetChar:FindFirstChild("Humanoid")
+            if not targetRoot or not targetHumanoid then 
+                faTargetPlayer = nil 
+                return 
+            end
+            
+            local currentHealth = humanoid.Health
+            local currentTime = tick()
+            
+            -- 텔레포트 쿨다운 체크 추가
+            if currentTime - faLastTeleportTime < FA_TELEPORT_COOLDOWN then
+                return
+            end
+            
+            if not faRetreatLock then
+                if currentHealth < faLastHealth and faLastHealth > 0 then
+                    faPerformRetreat(targetRoot)
+                    faLastTeleportTime = currentTime
+                elseif not faIsRetreating and (currentTime - faLastRetreatTime >= FA_RETREAT_INTERVAL) then
+                    faPerformRetreat(targetRoot)
+                    faLastTeleportTime = currentTime
+                elseif not faIsAbove and not faIsRetreating then
+                    root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 10000, 0))
+                    faLastTeleportTime = currentTime
+                    task.wait(math.random(10, 20) / 10)
+                    faIsAbove = true
+                elseif not faIsRetreating then
+                    root.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, 15, 0))
+                    faLastTeleportTime = currentTime
+                    if faIsFirstTeleport then
+                        task.wait(2)
+                        faIsFirstTeleport = false
+                    end
+                    faLastHealth = currentHealth
+                end
+            end
+        end)
     end
     faLoopActive = false
 end
@@ -1654,27 +1537,29 @@ end
 LocalPlayer.CharacterAdded:Connect(function(character)
     if FULL_AUTO_ENABLED then
         task.wait(1)
-        local humanoid = character:WaitForChild("Humanoid")
-        faLastHealth = humanoid.Health
-        faIsAbove = false
-        faIsFirstTeleport = true
-        faTargetPlayer = nil
-        faAutoClickPaused = false
-        faIsRetreating = false
-        faRetreatLock = false
-        faLastRetreatTime = tick()
-        faDisableGravity()
-        faStartSpinning()
-        faStartCameraLock()
-        faStartAutoClick()
-        if not faLoopActive then task.spawn(faMainLoop) end
+        pcall(function()
+            local humanoid = character:WaitForChild("Humanoid")
+            faLastHealth = humanoid.Health
+            faIsAbove = false
+            faIsFirstTeleport = true
+            faTargetPlayer = nil
+            faAutoClickPaused = false
+            faIsRetreating = false
+            faRetreatLock = false
+            faLastRetreatTime = tick()
+            faLastTeleportTime = tick()
+            faDisableGravity()
+            faStartSpinning()
+            faStartCameraLock()
+            faStartAutoClick()
+            if not faLoopActive then task.spawn(faMainLoop) end
+        end)
     end
 end)
 
 -- ============================================
 -- UI COMPONENTS
 -- ============================================
-
 local UIHandlers = {}
 
 local function ShowTab(tabName)
@@ -1739,7 +1624,9 @@ local function CreateToggle(name, parent, callback, configType, defaultValue)
     local function setEnabled(val)
         enabled = val
         checkInner.Visible = val
-        if callback then callback(val) end
+        if callback then 
+            pcall(function() callback(val) end)
+        end
         saveConfig()
     end
     local function toggle() setEnabled(not enabled) end
@@ -1845,7 +1732,9 @@ local function CreateButton(name, parent, callback)
     s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     s.Parent = btn
     
-    btn.MouseButton1Click:Connect(callback)
+    btn.MouseButton1Click:Connect(function()
+        pcall(callback)
+    end)
 end
 
 local AimList = Instance.new("UIListLayout")
@@ -1866,29 +1755,33 @@ end
 
 task.spawn(function()
     while task.wait(1) do
-        if AUTO_MATCH_ENABLED then attemptJoinMatch() end
+        if AUTO_MATCH_ENABLED then 
+            pcall(attemptJoinMatch)
+        end
     end
 end)
 
 local function setupPlayerTracking(p)
     if p == LocalPlayer then return end
     p.CharacterAdded:Connect(function(char)
-        local hum = char:WaitForChild("Humanoid", 10)
-        if not hum then return end
-        local lastH = hum.Health
-        hum.HealthChanged:Connect(function(h)
-            if not NOTIFICATION_ENABLED then return end
-            if not isEnemy(p) then return end
-            local diff = h - lastH
-            if diff < 0 then
-                createNotification(string.format("Hit %s -%d", p.Name, math.floor(-diff)))
-            elseif diff > 0 then
-                createNotification(string.format("Healing %s +%d", p.Name, math.floor(diff)))
-            end
-            lastH = h
-        end)
-        hum.Died:Connect(function()
-            if NOTIFICATION_ENABLED and isEnemy(p) then createNotification("Killed " .. p.Name) end
+        pcall(function()
+            local hum = char:WaitForChild("Humanoid", 10)
+            if not hum then return end
+            local lastH = hum.Health
+            hum.HealthChanged:Connect(function(h)
+                if not NOTIFICATION_ENABLED then return end
+                if not isEnemy(p) then return end
+                local diff = h - lastH
+                if diff < 0 then
+                    createNotification(string.format("Hit %s -%d", p.Name, math.floor(-diff)))
+                elseif diff > 0 then
+                    createNotification(string.format("Healing %s +%d", p.Name, math.floor(diff)))
+                end
+                lastH = h
+            end)
+            hum.Died:Connect(function()
+                if NOTIFICATION_ENABLED and isEnemy(p) then createNotification("Killed " .. p.Name) end
+            end)
         end)
     end)
 end
@@ -1897,15 +1790,17 @@ local function getClosestPlayer()
     local closest, shortestDist = nil, math.huge
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and isEnemy(p) and p.Character and p.Character:FindFirstChild("Head") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
-            local head = p.Character.Head
-            local _, onScreen = Camera:WorldToScreenPoint(head.Position)
-            if onScreen and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                local dist = (LocalPlayer.Character.HumanoidRootPart.Position - head.Position).Magnitude
-                if dist < shortestDist then
-                    shortestDist = dist
-                    closest = p
+            pcall(function()
+                local head = p.Character.Head
+                local _, onScreen = Camera:WorldToScreenPoint(head.Position)
+                if onScreen and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                    local dist = (LocalPlayer.Character.HumanoidRootPart.Position - head.Position).Magnitude
+                    if dist < shortestDist then
+                        shortestDist = dist
+                        closest = p
+                    end
                 end
-            end
+            end)
         end
     end
     return closest
@@ -1913,13 +1808,13 @@ end
 
 local function updateAimLock()
     if not isAimLockHeld or not AIM_LOCK_ENABLED then return end
-    local t = getClosestPlayer()
-    if t and t.Character and t.Character:FindFirstChild("Head") then
-        local pos = Camera:WorldToScreenPoint(t.Character.Head.Position)
-        pcall(function()
+    pcall(function()
+        local t = getClosestPlayer()
+        if t and t.Character and t.Character:FindFirstChild("Head") then
+            local pos = Camera:WorldToScreenPoint(t.Character.Head.Position)
             mousemoverel(math.floor(pos.X - Mouse.X + 0.5), math.floor(pos.Y - Mouse.Y + 0.5))
-        end)
-    end
+        end
+    end)
 end
 
 UserInputService.InputBegan:Connect(function(i, gpe)
@@ -1931,15 +1826,14 @@ UserInputService.InputBegan:Connect(function(i, gpe)
         rbEnabled = not rbEnabled
         if rbEnabled then
             rbUpdateCharacterRefs()
-            if rbConnection then rbConnection:Disconnect() end
-            rbConnection = RunService.Heartbeat:Connect(rbMainLoop)
+            task.spawn(rbMainLoop) -- 별도 스레드에서 실행
             createNotification("Rage Bot Activated!")
         else
-            if rbConnection then
-                rbConnection:Disconnect()
-                rbConnection = nil
+            if rbHrp then 
+                pcall(function()
+                    rbHrp.Velocity = Vector3.new(0, 0, 0)
+                end)
             end
-            if rbHrp then rbHrp.Velocity = Vector3.new(0, 0, 0) end
             createNotification("Rage Bot Deactivated!")
         end
     end
@@ -1954,124 +1848,133 @@ end)
 
 RunService.RenderStepped:Connect(function()
     if not AUTO_AIM_ENABLED or MainFrame.Visible then return end
-    local targetFound = false
-    if AUTO_AIM_MODE == "Silent" then
-        local t = getClosestPlayerForSilentAim()
-        if t then targetFound = true end
-    elseif AUTO_AIM_MODE == "Aim" then
-        local target = Mouse.Target
-        if target and target.Parent then
-            local p = Players:GetPlayerFromCharacter(target.Parent) or Players:GetPlayerFromCharacter(target.Parent.Parent)
-            if p and p ~= LocalPlayer and isEnemy(p) and p.Character and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
-                targetFound = true
+    pcall(function()
+        local targetFound = false
+        if AUTO_AIM_MODE == "Silent" then
+            local t = getClosestPlayerForSilentAim()
+            if t then targetFound = true end
+        elseif AUTO_AIM_MODE == "Aim" then
+            local target = Mouse.Target
+            if target and target.Parent then
+                local p = Players:GetPlayerFromCharacter(target.Parent) or Players:GetPlayerFromCharacter(target.Parent.Parent)
+                if p and p ~= LocalPlayer and isEnemy(p) and p.Character and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+                    targetFound = true
+                end
             end
         end
-    end
-    if targetFound then
-        local cur = tick()
-        if cur - lastClickTime >= CLICK_INTERVAL then
-            lastClickTime = cur
-            pcall(function()
+        if targetFound then
+            local cur = tick()
+            if cur - lastClickTime >= CLICK_INTERVAL then
+                lastClickTime = cur
                 VirtualInputManager:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, true, game, 0)
                 task.wait(0.01)
                 VirtualInputManager:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, false, game, 0)
-            end)
+            end
         end
-    end
+    end)
 end)
 
 local function updateESPStates()
     for _, p in pairs(Players:GetPlayers()) do
-        local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-        if r then
-            local g = r:FindFirstChild("ESP_Gui")
-            if g then g.Enabled = ESP_ENABLED and isEnemy(p) end
-            local h = r:FindFirstChild("HealthESP_Gui")
-            if h then h.Enabled = HP_BAR_ENABLED and isEnemy(p) end
-        end
+        pcall(function()
+            local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            if r then
+                local g = r:FindFirstChild("ESP_Gui")
+                if g then g.Enabled = ESP_ENABLED and isEnemy(p) end
+                local h = r:FindFirstChild("HealthESP_Gui")
+                if h then h.Enabled = HP_BAR_ENABLED and isEnemy(p) end
+            end
+        end)
     end
 end
 
 local function createESP(player)
     if player == LocalPlayer then return end
     local function onChar(char)
-        local root = char:WaitForChild("HumanoidRootPart", 5)
-        local hum = char:WaitForChild("Humanoid", 5)
-        if not root or not hum then return end
-        
-        local bGui = Instance.new("BillboardGui", root)
-        bGui.Name = "ESP_Gui"
-        bGui.Size = UDim2.new(4, 0, 5.5, 0)
-        bGui.AlwaysOnTop = true
-        bGui.Enabled = ESP_ENABLED and isEnemy(player)
-        
-        local container = Instance.new("Frame", bGui)
-        container.Size = UDim2.new(1, 0, 1, 0)
-        container.BackgroundTransparency = 1
-        
-        local function line(s, p)
-            local outline = Instance.new("Frame", container)
-            outline.BackgroundColor3 = Color3.new(0, 0, 0)
-            outline.BorderSizePixel = 0
-            outline.Size = UDim2.new(s.X.Scale, s.X.Offset + 2, s.Y.Scale, s.Y.Offset + 2)
-            outline.Position = UDim2.new(p.X.Scale, p.X.Offset - 1, p.Y.Scale, p.Y.Offset - 1)
-            outline.ZIndex = 1
+        pcall(function()
+            local root = char:WaitForChild("HumanoidRootPart", 5)
+            local hum = char:WaitForChild("Humanoid", 5)
+            if not root or not hum then return end
             
-            local f = Instance.new("Frame", container)
-            f.BackgroundColor3 = Color3.new(1, 1, 1)
-            f.BorderSizePixel = 0
-            f.Size = s
-            f.Position = p
-            f.ZIndex = 2
+            local bGui = Instance.new("BillboardGui", root)
+            bGui.Name = "ESP_Gui"
+            bGui.Size = UDim2.new(4, 0, 5.5, 0)
+            bGui.AlwaysOnTop = true
+            bGui.Enabled = ESP_ENABLED and isEnemy(player)
             
-            return f, outline
-        end
-        
-        line(UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 0, 0))
-        line(UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 1, -1))
-        line(UDim2.new(0, 1, 1, 0), UDim2.new(0, 0, 0, 0))
-        line(UDim2.new(0, 1, 1, 0), UDim2.new(1, -1, 0, 0))
-        
-        local hGui = Instance.new("BillboardGui", root)
-        hGui.Name = "HealthESP_Gui"
-        hGui.Size = UDim2.new(1, 0, 5.5, 0)
-        hGui.StudsOffset = Vector3.new(3, 0, 0) 
-        hGui.AlwaysOnTop = true
-        hGui.Enabled = HP_BAR_ENABLED and isEnemy(player)
-        
-        local barBg = Instance.new("Frame", hGui)
-        barBg.Size = UDim2.new(0.2, 0, 1, 0)
-        barBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-        barBg.BorderSizePixel = 0
-        
-        local hFill = Instance.new("Frame", barBg)
-        hFill.Size = UDim2.new(1, 0, 1, 0)
-        hFill.Position = UDim2.new(0, 0, 1, 0)
-        hFill.AnchorPoint = Vector2.new(0, 1)
-        hFill.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-        hFill.BorderSizePixel = 0
-        
-        local hText = Instance.new("TextLabel", barBg)
-        hText.Size = UDim2.new(3, 0, 0.2, 0)
-        hText.Position = UDim2.new(1.2, 0, 0, 0)
-        hText.BackgroundTransparency = 1
-        hText.TextColor3 = Color3.new(1, 1, 1)
-        hText.TextScaled = true
-        hText.Font = Enum.Font.SourceSansBold
-        
-        local function update()
-            local p = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
-            hFill.Size = UDim2.new(1, 0, p, 0)
-            hFill.BackgroundColor3 = Color3.fromHSV(p * 0.3, 1, 1)
-            hText.Text = math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)
-        end
-        hum.HealthChanged:Connect(update)
-        update()
+            local container = Instance.new("Frame", bGui)
+            container.Size = UDim2.new(1, 0, 1, 0)
+            container.BackgroundTransparency = 1
+            
+            local function line(s, p)
+                local outline = Instance.new("Frame", container)
+                outline.BackgroundColor3 = Color3.new(0, 0, 0)
+                outline.BorderSizePixel = 0
+                outline.Size = UDim2.new(s.X.Scale, s.X.Offset + 2, s.Y.Scale, s.Y.Offset + 2)
+                outline.Position = UDim2.new(p.X.Scale, p.X.Offset - 1, p.Y.Scale, p.Y.Offset - 1)
+                outline.ZIndex = 1
+                
+                local f = Instance.new("Frame", container)
+                f.BackgroundColor3 = Color3.new(1, 1, 1)
+                f.BorderSizePixel = 0
+                f.Size = s
+                f.Position = p
+                f.ZIndex = 2
+                
+                return f, outline
+            end
+            
+            line(UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 0, 0))
+            line(UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 1, -1))
+            line(UDim2.new(0, 1, 1, 0), UDim2.new(0, 0, 0, 0))
+            line(UDim2.new(0, 1, 1, 0), UDim2.new(1, -1, 0, 0))
+            
+            local hGui = Instance.new("BillboardGui", root)
+            hGui.Name = "HealthESP_Gui"
+            hGui.Size = UDim2.new(1, 0, 5.5, 0)
+            hGui.StudsOffset = Vector3.new(3, 0, 0) 
+            hGui.AlwaysOnTop = true
+            hGui.Enabled = HP_BAR_ENABLED and isEnemy(player)
+            
+            local barBg = Instance.new("Frame", hGui)
+            barBg.Size = UDim2.new(0.2, 0, 1, 0)
+            barBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+            barBg.BorderSizePixel = 0
+            
+            local hFill = Instance.new("Frame", barBg)
+            hFill.Size = UDim2.new(1, 0, 1, 0)
+            hFill.Position = UDim2.new(0, 0, 1, 0)
+            hFill.AnchorPoint = Vector2.new(0, 1)
+            hFill.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+            hFill.BorderSizePixel = 0
+            
+            local hText = Instance.new("TextLabel", barBg)
+            hText.Size = UDim2.new(3, 0, 0.2, 0)
+            hText.Position = UDim2.new(1.2, 0, 0, 0)
+            hText.BackgroundTransparency = 1
+            hText.TextColor3 = Color3.new(1, 1, 1)
+            hText.TextScaled = true
+            hText.Font = Enum.Font.SourceSansBold
+            
+            local function update()
+                pcall(function()
+                    local p = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                    hFill.Size = UDim2.new(1, 0, p, 0)
+                    hFill.BackgroundColor3 = Color3.fromHSV(p * 0.3, 1, 1)
+                    hText.Text = math.floor(hum.Health) .. "/" .. math.floor(hum.MaxHealth)
+                end)
+            end
+            hum.HealthChanged:Connect(update)
+            update()
+        end)
     end
     player.CharacterAdded:Connect(onChar)
     if player.Character then onChar(player.Character) end
 end
 
+-- ============================================
+-- UI TOGGLE CREATION
+-- ============================================
 UIHandlers.UpdateSilentAim = CreateToggle("enabled (silent aim)", AimPage, function(v) SILENT_AIM_ENABLED = v end, nil, SILENT_AIM_ENABLED)
 UIHandlers.UpdateAimLock = CreateToggle("Aim Lock", AimPage, function(v) 
     AIM_LOCK_ENABLED = v
@@ -2082,6 +1985,7 @@ UIHandlers.UpdateAimLock = CreateToggle("Aim Lock", AimPage, function(v)
         ShowKeybindInfo()
     end
 end, "Keybind", AIM_LOCK_ENABLED)
+
 UIHandlers.UpdateAutoAim = CreateToggle("Auto Aim", AimPage, function(v)
     AUTO_AIM_ENABLED = v
     if v then
@@ -2103,21 +2007,24 @@ end, "MatchMode", AUTO_MATCH_ENABLED)
 UIHandlers.UpdateFullAuto = CreateToggle("full Auto", AimPage, function(v)
     FULL_AUTO_ENABLED = v
     if v then
-        local character = LocalPlayer.Character
-        local humanoid = character and character:FindFirstChild("Humanoid")
-        faLastHealth = humanoid and humanoid.Health or 100
-        faIsFirstTeleport = true
-        faTargetPlayer = nil
-        faAutoClickPaused = false
-        faIsRetreating = false
-        faRetreatLock = false
-        faLastRetreatTime = tick()
-        faDisableGravity()
-        faStartSpinning()
-        faStartCameraLock()
-        faStartAutoClick()
-        if not faLoopActive then task.spawn(faMainLoop) end
-        createNotification("Full Auto Started")
+        pcall(function()
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChild("Humanoid")
+            faLastHealth = humanoid and humanoid.Health or 100
+            faIsFirstTeleport = true
+            faTargetPlayer = nil
+            faAutoClickPaused = false
+            faIsRetreating = false
+            faRetreatLock = false
+            faLastRetreatTime = tick()
+            faLastTeleportTime = tick()
+            faDisableGravity()
+            faStartSpinning()
+            faStartCameraLock()
+            faStartAutoClick()
+            if not faLoopActive then task.spawn(faMainLoop) end
+            createNotification("Full Auto Started")
+        end)
     else
         if faSpinConnection then faSpinConnection:Disconnect() faSpinConnection = nil end
         if faCameraConnection then faCameraConnection:Disconnect() faCameraConnection = nil end
@@ -2135,7 +2042,7 @@ UIHandlers.UpdateNoCoolTime = CreateToggle("No Cool Time (All)", AimPage, functi
         removeCooldowns()
         noCoolTimeConnection = task.spawn(function()
             while NO_COOL_TIME_ENABLED do
-                task.wait(10)
+                task.wait(15)
                 if NO_COOL_TIME_ENABLED then pcall(removeCooldowns) end
             end
         end)
@@ -2161,11 +2068,11 @@ UIHandlers.UpdateRageBot = CreateToggle("Rage bot", AimPage, function(v)
         createNotification("Rage Bot Ready! Press [" .. formatKeyName(RAGE_BOT_KEY) .. "] to toggle")
     else
         rbEnabled = false
-        if rbConnection then
-            rbConnection:Disconnect()
-            rbConnection = nil
+        if rbHrp then 
+            pcall(function()
+                rbHrp.Velocity = Vector3.new(0, 0, 0)
+            end)
         end
-        if rbHrp then rbHrp.Velocity = Vector3.new(0, 0, 0) end
         createNotification("Rage Bot Disabled")
     end
 end, "RageBotKeybind", RAGE_BOT_ENABLED)
@@ -2202,7 +2109,6 @@ CreateToggle("Load skin changer", VisualPage, function(v)
             createNotification("Skin Changer Loaded")
         else
             createNotification("Skin Changer Failed")
-            warn("Skin Changer Error:", err)
         end
     else
         createNotification("Skin Changer Disabled")
@@ -2230,6 +2136,9 @@ CreateButton("mesh wrapping", VisualPage, function()
     end
 end)
 
+-- ============================================
+-- DRAGGING & KEYBIND
+-- ============================================
 local dragging, dragStart, startPos
 MainFrame.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 and LOADING_COMPLETE and not HUB_ANIMATION_PLAYING then
@@ -2269,103 +2178,112 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
+-- ============================================
+-- LOADING SEQUENCE (안정화됨)
+-- ============================================
 local function RunLoadingSequence()
-    StartLoadingAnimation()
-    task.wait(0.5)
-    UpdateLoadingProgress(5, "Checking Core Services...")
-    task.wait(0.2)
-    UpdateLoadingProgress(15, "Core Services Ready")
-    task.wait(0.15)
-    UpdateLoadingProgress(20, "Waiting for Character...")
-    local charReady = false
-    for i = 1, 50 do
-        local char = LocalPlayer.Character
-        if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") then
-            charReady = true
-            break
-        end
-        task.wait(0.05)
-    end
-    UpdateLoadingProgress(25, charReady and "Character Ready" or "Character Timeout")
-    task.wait(0.15)
-    UpdateLoadingProgress(30, "Initializing ESP System...")
-    for _, p in pairs(Players:GetPlayers()) do
-        pcall(function() createESP(p) end)
-    end
-    Players.PlayerAdded:Connect(createESP)
-    UpdateLoadingProgress(40, "ESP System Ready")
-    task.wait(0.15)
-    UpdateLoadingProgress(45, "Setting up Player Tracking...")
-    for _, p in ipairs(Players:GetPlayers()) do
-        pcall(function() setupPlayerTracking(p) end)
-    end
-    Players.PlayerAdded:Connect(setupPlayerTracking)
-    UpdateLoadingProgress(55, "Player Tracking Ready")
-    task.wait(0.15)
-    UpdateLoadingProgress(60, "Loading Weapon Modules...")
-    if NO_COOL_TIME_ENABLED then
-        pcall(function()
-            lastCooldownRemoval = 0
-            removeCooldowns()
-            if LocalPlayer.Character then hookCharacterForNoCoolTime() end
-            noCoolTimeConnection = task.spawn(function()
-                while NO_COOL_TIME_ENABLED do
-                    task.wait(10)
-                    if NO_COOL_TIME_ENABLED then pcall(removeCooldowns) end
-                end
-            end)
-        end)
-    end
-    if NO_RECOIL_ENABLED then
-        pcall(function()
-            initNoRecoilModules()
-            enableNoRecoil()
-        end)
-    end
-    UpdateLoadingProgress(70, "Weapon Modules Ready")
-    task.wait(0.15)
-    UpdateLoadingProgress(75, "Loading External Scripts...")
-    if SKIN_CHANGER_ENABLED then
-        local success = pcall(function()
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/kgycoder/Rivals-Skin-changer/refs/heads/main/Rivals-Skin%20changer", true))()
-        end)
-        UpdateLoadingProgress(82, success and "Skin Changer Loaded" or "Skin Changer Failed")
-    else
-        UpdateLoadingProgress(82, "External Scripts Skipped")
-    end
-    task.wait(0.15)
-    UpdateLoadingProgress(88, "Initializing Auto Features...")
-    if FULL_AUTO_ENABLED then
-        pcall(function()
-            local character = LocalPlayer.Character
-            local humanoid = character and character:FindFirstChild("Humanoid")
-            faLastHealth = humanoid and humanoid.Health or 100
-            faIsFirstTeleport = true
-            faLastRetreatTime = tick()
-            faDisableGravity()
-            faStartSpinning()
-            faStartCameraLock()
-            faStartAutoClick()
-            if not faLoopActive then task.spawn(faMainLoop) end
-        end)
-    end
-    if AUTO_MATCH_ENABLED then pcall(attemptJoinMatch) end
-    if RAGE_BOT_ENABLED then pcall(rbUpdateCharacterRefs) end
-    if THIRD_PERSON_ENABLED then pcall(enableThirdPerson) end
-    UpdateLoadingProgress(95, "Auto Features Ready")
-    task.wait(0.15)
-    UpdateLoadingProgress(98, "Applying Configuration...")
-    updateESPStates()
-    ShowTab("Aim")
-    task.wait(0.1)
-    UpdateLoadingProgress(100, "All Systems Loaded!")
-    task.wait(0.2)
-    EndLoadingAnimation(function()
+    pcall(function()
+        StartLoadingAnimation()
         task.wait(0.5)
-        ShowKeybindInfo()
+        UpdateLoadingProgress(5, "Checking Core Services...")
+        task.wait(0.2)
+        UpdateLoadingProgress(15, "Core Services Ready")
+        task.wait(0.15)
+        UpdateLoadingProgress(20, "Waiting for Character...")
+        local charReady = false
+        for i = 1, 50 do
+            local char = LocalPlayer.Character
+            if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") then
+                charReady = true
+                break
+            end
+            task.wait(0.05)
+        end
+        UpdateLoadingProgress(25, charReady and "Character Ready" or "Character Timeout")
+        task.wait(0.15)
+        UpdateLoadingProgress(30, "Initializing ESP System...")
+        for _, p in pairs(Players:GetPlayers()) do
+            pcall(function() createESP(p) end)
+        end
+        Players.PlayerAdded:Connect(createESP)
+        UpdateLoadingProgress(40, "ESP System Ready")
+        task.wait(0.15)
+        UpdateLoadingProgress(45, "Setting up Player Tracking...")
+        for _, p in ipairs(Players:GetPlayers()) do
+            pcall(function() setupPlayerTracking(p) end)
+        end
+        Players.PlayerAdded:Connect(setupPlayerTracking)
+        UpdateLoadingProgress(55, "Player Tracking Ready")
+        task.wait(0.15)
+        UpdateLoadingProgress(60, "Loading Weapon Modules...")
+        if NO_COOL_TIME_ENABLED then
+            pcall(function()
+                lastCooldownRemoval = 0
+                removeCooldowns()
+                if LocalPlayer.Character then hookCharacterForNoCoolTime() end
+                noCoolTimeConnection = task.spawn(function()
+                    while NO_COOL_TIME_ENABLED do
+                        task.wait(15)
+                        if NO_COOL_TIME_ENABLED then pcall(removeCooldowns) end
+                    end
+                end)
+            end)
+        end
+        if NO_RECOIL_ENABLED then
+            pcall(function()
+                initNoRecoilModules()
+                enableNoRecoil()
+            end)
+        end
+        UpdateLoadingProgress(70, "Weapon Modules Ready")
+        task.wait(0.15)
+        UpdateLoadingProgress(75, "Loading External Scripts...")
+        if SKIN_CHANGER_ENABLED then
+            local success = pcall(function()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/kgycoder/Rivals-Skin-changer/refs/heads/main/Rivals-Skin%20changer", true))()
+            end)
+            UpdateLoadingProgress(82, success and "Skin Changer Loaded" or "Skin Changer Failed")
+        else
+            UpdateLoadingProgress(82, "External Scripts Skipped")
+        end
+        task.wait(0.15)
+        UpdateLoadingProgress(88, "Initializing Auto Features...")
+        if FULL_AUTO_ENABLED then
+            pcall(function()
+                local character = LocalPlayer.Character
+                local humanoid = character and character:FindFirstChild("Humanoid")
+                faLastHealth = humanoid and humanoid.Health or 100
+                faIsFirstTeleport = true
+                faLastRetreatTime = tick()
+                faLastTeleportTime = tick()
+                faDisableGravity()
+                faStartSpinning()
+                faStartCameraLock()
+                faStartAutoClick()
+                if not faLoopActive then task.spawn(faMainLoop) end
+            end)
+        end
+        if AUTO_MATCH_ENABLED then pcall(attemptJoinMatch) end
+        if RAGE_BOT_ENABLED then pcall(rbUpdateCharacterRefs) end
+        if THIRD_PERSON_ENABLED then pcall(enableThirdPerson) end
+        UpdateLoadingProgress(95, "Auto Features Ready")
+        task.wait(0.15)
+        UpdateLoadingProgress(98, "Applying Configuration...")
+        updateESPStates()
+        ShowTab("Aim")
+        task.wait(0.1)
+        UpdateLoadingProgress(100, "All Systems Loaded!")
+        task.wait(0.2)
+        EndLoadingAnimation(function()
+            task.wait(0.5)
+            ShowKeybindInfo()
+        end)
     end)
 end
 
+-- ============================================
+-- STARTUP
+-- ============================================
 if FULL_AUTO_ENABLED then
     LOADING_COMPLETE = true
     MainFrame.Visible = false
@@ -2377,21 +2295,24 @@ if FULL_AUTO_ENABLED then
     end
     Players.PlayerAdded:Connect(createESP)
     Players.PlayerAdded:Connect(setupPlayerTracking)
-    local character = LocalPlayer.Character
-    local humanoid = character and character:FindFirstChild("Humanoid")
-    faLastHealth = humanoid and humanoid.Health or 100
-    faIsFirstTeleport = true
-    faTargetPlayer = nil
-    faAutoClickPaused = false
-    faIsRetreating = false
-    faRetreatLock = false
-    faLastRetreatTime = tick()
-    faDisableGravity()
-    faStartSpinning()
-    faStartCameraLock()
-    faStartAutoClick()
-    if not faLoopActive then task.spawn(faMainLoop) end
-    if AUTO_MATCH_ENABLED then attemptJoinMatch() end
+    pcall(function()
+        local character = LocalPlayer.Character
+        local humanoid = character and character:FindFirstChild("Humanoid")
+        faLastHealth = humanoid and humanoid.Health or 100
+        faIsFirstTeleport = true
+        faTargetPlayer = nil
+        faAutoClickPaused = false
+        faIsRetreating = false
+        faRetreatLock = false
+        faLastRetreatTime = tick()
+        faLastTeleportTime = tick()
+        faDisableGravity()
+        faStartSpinning()
+        faStartCameraLock()
+        faStartAutoClick()
+        if not faLoopActive then task.spawn(faMainLoop) end
+    end)
+    if AUTO_MATCH_ENABLED then pcall(attemptJoinMatch) end
     if SKIN_CHANGER_ENABLED then
         pcall(function()
             loadstring(game:HttpGet("https://raw.githubusercontent.com/kgycoder/Rivals-Skin-changer/refs/heads/main/Rivals-Skin%20changer", true))()
@@ -2404,7 +2325,7 @@ if FULL_AUTO_ENABLED then
             if LocalPlayer.Character then hookCharacterForNoCoolTime() end
             noCoolTimeConnection = task.spawn(function()
                 while NO_COOL_TIME_ENABLED do
-                    task.wait(10)
+                    task.wait(15)
                     if NO_COOL_TIME_ENABLED then pcall(removeCooldowns) end
                 end
             end)
@@ -2416,8 +2337,8 @@ if FULL_AUTO_ENABLED then
             enableNoRecoil()
         end)
     end
-    if RAGE_BOT_ENABLED then rbUpdateCharacterRefs() end
-    if THIRD_PERSON_ENABLED then enableThirdPerson() end
+    if RAGE_BOT_ENABLED then pcall(rbUpdateCharacterRefs) end
+    if THIRD_PERSON_ENABLED then pcall(enableThirdPerson) end
     updateESPStates()
     ShowTab("Aim")
     task.wait(1)
@@ -2426,4 +2347,4 @@ else
     task.spawn(RunLoadingSequence)
 end
 
-print("[KS-Rivals HUB] Optimized Edition Loaded Successfully!")
+print("KS-Rivals Hub v2.3 Fixed - Loaded Successfully")
